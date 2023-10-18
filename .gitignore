@@ -1,0 +1,5 @@
+# Misc
+.DS_Store
+
+# Dependencies
+__pycache__/

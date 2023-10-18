@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "sarkin-kofa"
+version = "0.1.0"
+description = ""
+authors = ["Abdulazeez Jimoh <abdulazeezojimoh@gmail.com>"]
+readme = "README.md"
+packages = [{include = "sarkinkofa"}]
+include = ["sarkinkofa/resources/**"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+ultralytics = "^8.0.148"
+opencv-python = "^4.8.0.74"
+openpyxl = "^3.1.2"
+pillow = "9.5.0"
+ipykernel = "^6.25.1"
+watchdog = "^3.0.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

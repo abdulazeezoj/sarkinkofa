@@ -18,12 +18,12 @@ class SARKINkofa:
 
     def __init__(self, model_size: str) -> None:
         """
-        Initializes a SARKINkofa object.
+        Initializes SARKINkofa object.
 
         Args:
-        size (str): The size of the SARKINkofa model to use. Must be one of "n", "s", "m", or "l".
-        model_dir (str): The directory containing the SARKINkofa model.
+            model_size (str): The size of the model to use. Must be one of ["n", "s", "m", "l"].
         """
+
         # Check if size is valid
         if model_size not in self.model_size_all:
             raise Exception(f"Invalid model size! Must be one of {self.model_size_all}.")
@@ -110,13 +110,14 @@ class SARKINkofa:
 
     def _read_lp(self, img) -> tuple[str, float] | None:
         """
-        Detects license plate in an image and returns its information.
+        Reads the license plate number and confidence score from an input image.
 
         Args:
-            img (numpy.ndarray): The input image.
+            img: The input image to read the license plate from.
 
         Returns:
-            LicensePlateDetection | None: The license plate detection result.
+            A tuple containing the license plate number and confidence score if a license plate is detected,
+            otherwise returns None.
         """
         # Detect license plate number
         results = self.anpr_model(img, verbose=False)
@@ -197,6 +198,15 @@ class SARKINkofa:
         )
 
     def _detect_vehicle(self, img) -> VehicleDetection | None:
+        """
+        Detects a vehicle in an image and returns its information.
+
+        Args:
+            img: A numpy array representing the image.
+
+        Returns:
+            A VehicleDetection object containing the detected vehicle's information, or None if no vehicle is detected.
+        """
         # Detect vehicle
         anpd_results = self.anpd_model(img, classes=[1], verbose=False)
 
@@ -218,9 +228,6 @@ class SARKINkofa:
         vehicle_cls = cls_labels[vehicle_idx]
         vehicle_color = cls_colors[vehicle_idx]
         vehicle_img = img[vehicle_box[1] : vehicle_box[3], vehicle_box[0] : vehicle_box[2]]
-
-        # Detect license plate
-        vehicle_lp = self._detect_lp(vehicle_img)
 
         # Return vehicle
         return VehicleDetection(

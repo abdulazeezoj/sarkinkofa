@@ -1,9 +1,7 @@
 import os
-import shutil
 import time
 import cv2
 import json
-from datetime import datetime
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -34,8 +32,9 @@ class SARKINKofaFSWatcher:
 
 
 class SARKINKofaFSHandler(FileSystemEventHandler):
-    def __init__(self, output_folder):
+    def __init__(self, output_folder, verbose=False):
         self.output_folder = output_folder
+        self.verbose = verbose
         self.detector = SARKINkofa("n")
 
     def on_created(self, event):
@@ -43,7 +42,9 @@ class SARKINKofaFSHandler(FileSystemEventHandler):
             return
 
         if event.src_path.lower().endswith((".png", ".jpg", ".jpeg")):
-            print(f"New image added: {event.src_path}")
+            if self.verbose:
+                print(f"[ INFO ] New image detected: {event.src_path}")
+                print(f"[ INFO ] Processing image: {event.src_path}")
             self.process_image(event.src_path)
 
     def read_image(self, image_path):
@@ -82,7 +83,7 @@ class SARKINKofaFSHandler(FileSystemEventHandler):
                     (plate_bbox[0] + vehicle_bbox[0], plate_bbox[1] + vehicle_bbox[1]),
                     (plate_bbox[2] + vehicle_bbox[0], plate_bbox[3] + vehicle_bbox[1]),
                     (0, 0, 255),
-                    2,
+                    3,
                 )
 
                 # Get plate number text
@@ -94,11 +95,11 @@ class SARKINKofaFSHandler(FileSystemEventHandler):
                     image = cv2.putText(
                         image,
                         plate_text,
-                        (plate_bbox[0], plate_bbox[1] - 10),
+                        (plate_bbox[0] + vehicle_bbox[0], plate_bbox[1] + vehicle_bbox[1] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.9,
                         (0, 0, 255),
-                        2,
+                        3,
                     )
 
         return image
@@ -128,5 +129,7 @@ class SARKINKofaFSHandler(FileSystemEventHandler):
         with open(_detection_path, "w") as f:
             json.dump(_detection, f)
 
-        # Print output path
-        print(f"Image processed and stored in: {self.output_folder}")
+        if self.verbose:
+            print(f"[ INFO ] Image saved: {_image_path}")
+            print(f"[ INFO ] Detection saved: {_detection_path}")
+            print(f"[ INFO ] Image processed: {image_path}")

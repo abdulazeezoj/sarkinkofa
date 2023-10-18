@@ -326,9 +326,6 @@ while True:
     if not success:
         break
 
-    # Flip image
-    # frame = cv2.flip(frame, 1)
-
     # Show image
     cv2.imshow("SARKINkofa", frame)
 

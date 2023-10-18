@@ -3,3 +3,17 @@
 
 # Dependencies
 __pycache__/
+
+*.png
+*.jpg
+*.jpeg
+*.mp4
+*.xlsx
+
+!src/demo/input/*.png
+!src/demo/input/*.jpg
+!src/demo/input/*.jpeg
+!src/demo/output/*.png
+!src/demo/output/*.jpg
+!src/demo/output/*.jpeg
+!src/demo/**/*.template.*

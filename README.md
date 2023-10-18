@@ -39,5 +39,5 @@ pip install git+https://github.com/abdulazeezoj/sarkin-kofa.git
 #### Using Poetry
 To install the project using `poetry`, run the following command:
 ```bash
-poetry add git+hhttps://github.com/abdulazeezoj/sarkin-kofa.git
+poetry add git+https://github.com/abdulazeezoj/sarkin-kofa.git
 ```

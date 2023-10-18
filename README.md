@@ -25,4 +25,19 @@ SARKINkofa is a Hausa word that means "Gatekeeper". It is a project that is buil
 
 ## Technicals
 
-## Useful Commands
+## HOW TOs
+
+### How to install
+
+#### Using Pip
+
+To install the project using `pip`, run the following command:
+```bash
+pip install git+https://github.com/abdulazeezoj/sarkin-kofa.git
+```
+
+#### Using Poetry
+To install the project using `poetry`, run the following command:
+```bash
+poetry add git+hhttps://github.com/abdulazeezoj/sarkin-kofa.git
+```

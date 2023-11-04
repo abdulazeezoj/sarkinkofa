@@ -6,7 +6,10 @@
 
 ## Table of Contents
 - [Introduction](#introduction)
-- [Technicals](#technicals)
+- [HOW TOs](#how-tos)
+    - [How to install](#how-to-install)
+        - [Using Pip](#using-pip)
+        - [Using Poetry](#using-poetry)
 - [Useful Commands](#useful-commands)
 
 ## Introduction
@@ -22,8 +25,6 @@ SARKINkofa is a Hausa word that means "Gatekeeper". It is a project that is buil
 - Parking Lots
 - Security Checkpoints
 - Security Gates (e.g. Airport, Government House, Schools, etc.)
-
-## Technicals
 
 ## HOW TOs
 

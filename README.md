@@ -41,3 +41,25 @@ To install the project using `poetry`, run the following command:
 ```bash
 poetry add git+https://github.com/abdulazeezoj/sarkin-kofa.git
 ```
+
+### Useful Commands
+
+To run the project after installation, run the following command:
+```bash
+sarkinkofa-fs <input_folder> <output_folder>
+```
+
+To run the project in verbose mode, run the following command:
+```bash
+sarkinkofa-fs <input_folder> <output_folder> --verbose
+```
+
+For help, run the following command:
+```bash
+sarkinkofa-fs --help
+```
+
+To install completion for your shell, run the following command:
+```bash
+sarkinkofa-fs --install-completion
+```

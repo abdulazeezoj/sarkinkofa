@@ -1,5 +1,5 @@
 import os
-from sarkinkofa.demo import SARKINKofaFSWatcher
+from sarkinkofa.tools import SARKINKofaFSWatcher
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_DIR = os.path.join(BASE_DIR, "input")

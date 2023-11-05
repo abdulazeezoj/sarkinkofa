@@ -19,6 +19,7 @@ opencv-python = "^4.8.0.74"
 pillow = "9.5.0"
 numpy = "^1.26.1"
 typer = {extras = ["all"], version = "^0.9.0"}
+watchdog = "^3.0.0"
 
 
 [tool.poetry.group.dev.dependencies]

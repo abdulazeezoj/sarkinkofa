@@ -16,7 +16,7 @@ sarkinkofa-fs = "sarkinkofa.sarkinkofa_fs:app"
 python = ">=3.10,<3.13"
 ultralytics = "^8.0.148"
 opencv-python = "^4.8.0.74"
-pillow = "10.0.1"
+pillow = "10.2.0"
 numpy = "^1.26.1"
 typer = {extras = ["all"], version = "^0.9.0"}
 watchdog = "^3.0.0"

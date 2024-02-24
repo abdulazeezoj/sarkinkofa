@@ -1,42 +1,52 @@
 import os
+from datetime import datetime
+from typing import Any
 
 import cv2
 import numpy as np
 import pandas as pd
-from datetime import datetime
-from sarkinkofa import SARKINkofa
-from sarkinkofa.types import SARKINkofaDetection
+from cv2.typing import MatLike
+from pandas import DataFrame
+from PIL import Image
 
+from sarkinkofa import SARKINkofa
+from sarkinkofa.types import PlateDetection, SarkiDetection, VehicleDetection
 
 # Configs and constants
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STORE_DIR = os.path.join(BASE_DIR, "store")
-DB_FILE = os.path.join(BASE_DIR, "db.xlsx")
+BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
+STORE_DIR: str = os.path.join(BASE_DIR, "store")
+DB_FILE: str = os.path.join(STORE_DIR, "_store.xlsx")
 
 
-def check_vehicle_in_db(detection: SARKINkofaDetection) -> pd.DataFrame | None:
+def check_vehicle_in_db(detection: SarkiDetection) -> pd.DataFrame | None:
     """
     Check if a vehicle is in the database.
 
     Args:
-        vehicle (SARKINkofaDetection): The vehicle to check.
+        vehicle (SarkiDetection): The vehicle to check.
 
     Returns:
         pd.DataFrame | None: A DataFrame containing the vehicle information if it is in the database,
         otherwise None.
     """
-    # Read database
-    db = pd.read_excel(DB_FILE, sheet_name="LOG")
-
     # Get vehicle information
-    lp_number = detection.lp.number if detection.lp is not None else None
+    if detection.vehicles is None or len(detection.vehicles) == 0:
+        return None
+
+    if detection.vehicles[0].plates is None or len(detection.vehicles[0].plates) == 0:
+        return None
+
+    plate: PlateDetection = detection.vehicles[0].plates[0]
+
+    # Read database
+    db: DataFrame = pd.read_excel(DB_FILE, sheet_name="LOG")  # type: ignore
 
     # Return if vehicle has no license plate
-    if lp_number is None:
+    if plate.number is None:
         return None
 
     # Check if vehicle is in database
-    vehicle_in_db = pd.DataFrame(db.loc[db["LP_NUMBER"].str.upper() == lp_number.upper()])
+    vehicle_in_db = pd.DataFrame(db.loc[db["PLATE_NUMBER"].str.upper() == plate.number.upper()])  # type: ignore
 
     # Return if vehicle_in_db is empty
     if len(vehicle_in_db) == 0:
@@ -45,56 +55,58 @@ def check_vehicle_in_db(detection: SARKINkofaDetection) -> pd.DataFrame | None:
     return vehicle_in_db
 
 
-def log_vehicle_in_db(detection: SARKINkofaDetection):
+def log_vehicle_in_db(detection: SarkiDetection) -> None:
     """
     Log a vehicle in the database.
 
     Args:
-        vehicle (SARKINkofaDetection): The vehicle to log.
+        vehicle (SarkiDetection): The vehicle to log.
     """
-    # Read database
-    db = pd.read_excel(DB_FILE, sheet_name="LOG")
-
     # Get vehicle information
-    vehicle_lp_number = detection.lp.number if detection.lp is not None else None
-    vehicle_lp_number_conf = detection.lp.number_conf if detection.lp is not None else None
-    vehicle_lp_img = detection.lp.img if detection.lp is not None else None
-    vehicle_img = detection.vehicle.img if detection.vehicle is not None else None
+    if detection.vehicles is None or len(detection.vehicles) == 0:
+        return None
 
-    # Check if vehicle is detected
-    if vehicle_img is None:
-        raise Exception("Vehicle not detected!")
+    if detection.vehicles[0].plates is None or len(detection.vehicles[0].plates) == 0:
+        return None
 
-    # Check if vehicle has license plate
-    if vehicle_lp_number is None or vehicle_lp_img is None:
-        raise Exception("Vehicle does not have a license plate.")
+    detection_img: MatLike = detection.img
+    vehicle: VehicleDetection = detection.vehicles[0]
+    plate: PlateDetection = detection.vehicles[0].plates[0]
 
-    vehicle_id = len(db) + 1
-    vehicle_img_path = os.path.join(STORE_DIR, f"{vehicle_id}_vehicle.jpg")
-    vehicle_lp_img_path = os.path.join(STORE_DIR, f"{vehicle_id}_lp.jpg")
+    # Read database
+    db: DataFrame = pd.read_excel(DB_FILE, sheet_name="LOG")  # type: ignore
+
+    vehicle_id: int = len(db) + 1
+    vehicle_box: tuple[int, int, int, int] = vehicle.box
+    plate_box: tuple[int, int, int, int] = plate.box
+    vehicle_img: MatLike = detection_img[
+        vehicle_box[1] : vehicle_box[3], vehicle_box[0] : vehicle_box[2]
+    ]
+    plate_img: MatLike = vehicle_img[plate_box[1] : plate_box[3], plate_box[0] : plate_box[2]]
+    vehicle_img_path: str = os.path.join(STORE_DIR, f"{vehicle_id}_vehicle.jpg")
+    plate_img_path: str = os.path.join(STORE_DIR, f"{vehicle_id}_plate.jpg")
 
     # Write vehicle and license plate images
     print("[ INFO ] Writing vehicle and license plate images...")
-    cv2.imwrite(vehicle_img_path, vehicle_img)
-    cv2.imwrite(vehicle_lp_img_path, vehicle_lp_img)
+    cv2.imwrite(vehicle_img_path, cv2.cvtColor(vehicle_img, cv2.COLOR_RGB2BGR))
+    cv2.imwrite(plate_img_path, cv2.cvtColor(plate_img, cv2.COLOR_RGB2BGR))
     print("[ INFO ] Vehicle and license plate images written.")
 
     # Get current date and time
-    current_datetime = datetime.now()
+    current_datetime: datetime = datetime.now()
 
     # Create vehicle log
-    vehicle_log = {
-        "CAR_ID": vehicle_id,
-        "CAR_IMG": vehicle_img_path,
-        "LP_IMG": vehicle_lp_img_path,
-        "LP_NUMBER": vehicle_lp_number,
-        "LP_CONF": vehicle_lp_number_conf,
+    vehicle_log: dict[str, int | str | float | None] = {
+        "VEHICLE_ID": vehicle_id,
+        "VEHICLE_IMG": vehicle_img_path,
+        "PLATE_IMG": plate_img_path,
+        "PLATE_NUMBER": plate.number,
         "ENTRY_DATE": f"{current_datetime.strftime('%Y-%m-%d %H:%M:%S')}",
     }
     vehicle_df = pd.DataFrame([vehicle_log])
 
     # Log vehicle in database
-    db = pd.concat([db, vehicle_df], ignore_index=True)
+    db = pd.concat([db, vehicle_df], ignore_index=True)  # type: ignore
 
     # Save database, preserve other sheets
     with pd.ExcelWriter(
@@ -104,36 +116,36 @@ def log_vehicle_in_db(detection: SARKINkofaDetection):
         if_sheet_exists="replace",
     ) as writer:
         # Write database
-        db.to_excel(writer, sheet_name="LOG", index=False)
+        db.to_excel(writer, sheet_name="LOG", index=False)  # type: ignore
 
 
-def log_vehicle_exit_db(detection: SARKINkofaDetection):
+def log_vehicle_exit_db(detection: SarkiDetection) -> None:
     """
     Log a vehicle exit in the database.
 
     Args:
-        vehicle (SARKINkofaDetection): The vehicle to log.
+        vehicle (SarkiDetection): The vehicle to log.
     """
     # Read database
-    db = pd.read_excel(DB_FILE, sheet_name="TRAFFIC")
+    db: DataFrame = pd.read_excel(DB_FILE, sheet_name="TRAFFIC")  # type: ignore
 
     # Get vehicle in database
-    vehicle_in_db = check_vehicle_in_db(detection)
+    vehicle_in_db: DataFrame | None = check_vehicle_in_db(detection)
 
     # Check if vehicle is in database
     if vehicle_in_db is None:
         raise Exception("Vehicle not in database!")
 
     # Get vehicle ID
-    vehicle_id = vehicle_in_db["CAR_ID"].values[0]
+    vehicle_id: Any = vehicle_in_db["VEHICLE_ID"].values[0]  # type: ignore
 
     # Get vehicle from database
     vehicle_df = db[
-        (db["CAR_ID"] == vehicle_id) & ~(db["ENTRY_DATE"].isna()) & (db["EXIT_DATE"].isna())
-    ].copy()
+        (db["VEHICLE_ID"] == vehicle_id) & ~(db["ENTRY_DATE"].isna()) & (db["EXIT_DATE"].isna())
+    ].copy()  # type: ignore
 
     # Sort vehicle database by entry date
-    vehicle_df = vehicle_df.sort_values(by=["ENTRY_DATE"], ascending=False)
+    vehicle_df: Any = vehicle_df.sort_values(by=["ENTRY_DATE"], ascending=False)
 
     # Check if there is a vehicle entry
     if vehicle_df.empty:
@@ -148,14 +160,13 @@ def log_vehicle_exit_db(detection: SARKINkofaDetection):
         raise Exception("Vehicle exit already logged!")
 
     # Get vehicle entry and entry time
-    vehicle_entry = vehicle_df["ENTRY_DATE"].values[0]
-    vehicle_exit = vehicle_df["EXIT_DATE"].values[0]
+    vehicle_entry: Any = vehicle_df["ENTRY_DATE"].values[0]
 
     # Get current date and time
-    current_datetime = datetime.now()
+    current_datetime: datetime = datetime.now()
 
     # Calculate vehicle duration in hours
-    vehicle_duration = (
+    vehicle_duration: float = (
         current_datetime - datetime.strptime(vehicle_entry, "%Y-%m-%d %H:%M:%S")
     ).total_seconds()
 
@@ -175,33 +186,33 @@ def log_vehicle_exit_db(detection: SARKINkofaDetection):
         if_sheet_exists="replace",
     ) as writer:
         # Write database
-        db.to_excel(writer, sheet_name="TRAFFIC", index=False)
+        db.to_excel(writer, sheet_name="TRAFFIC", index=False)  # type: ignore
 
 
-def log_vehicle_entry_db(detection: SARKINkofaDetection):
+def log_vehicle_entry_db(detection: SarkiDetection) -> None:
     """
     Log a vehicle entry in the database.
 
     Args:
-        vehicle (SARKINkofaDetection): The vehicle to log.
+        vehicle (SarkiDetection): The vehicle to log.
     """
     # Read database
-    db = pd.read_excel(DB_FILE, sheet_name="TRAFFIC")
+    db: DataFrame = pd.read_excel(DB_FILE, sheet_name="TRAFFIC")  # type: ignore
 
     # Get vehicle in database
-    vehicle_in_db = check_vehicle_in_db(detection)
+    vehicle_in_db: DataFrame | None = check_vehicle_in_db(detection)
 
     # Check if vehicle is in database
     if vehicle_in_db is None:
         raise Exception("Vehicle not in database!")
 
     # Get vehicle ID
-    vehicle_id = vehicle_in_db["CAR_ID"].values[0]
+    vehicle_id: Any = vehicle_in_db["VEHICLE_ID"].values[0]  # type: ignore
 
     # Get vehicle from database
-    vehicle_df = db[
-        (db["CAR_ID"] == vehicle_id) & ~(db["ENTRY_DATE"].isna()) & (db["EXIT_DATE"].isna())
-    ].copy()
+    vehicle_df: Any = db[
+        (db["VEHICLE_ID"] == vehicle_id) & ~(db["ENTRY_DATE"].isna()) & (db["EXIT_DATE"].isna())
+    ].copy()  # type: ignore
 
     # Sort vehicle database by entry date
     vehicle_df = vehicle_df.sort_values(by=["ENTRY_DATE"], ascending=False)
@@ -211,11 +222,11 @@ def log_vehicle_entry_db(detection: SARKINkofaDetection):
         raise Exception("Vehicle entry already logged!")
 
     # Get current date and time
-    current_datetime = datetime.now()
+    current_datetime: datetime = datetime.now()
 
     # Create vehicle log
-    vehicle_log = {
-        "CAR_ID": vehicle_id,
+    vehicle_log: dict[str, Any | str | None] = {
+        "VEHICLE_ID": vehicle_id,
         "ENTRY_DATE": f"{current_datetime.strftime('%Y-%m-%d %H:%M:%S')}",
         "EXIT_DATE": None,
         "DURATION": None,
@@ -223,7 +234,7 @@ def log_vehicle_entry_db(detection: SARKINkofaDetection):
     vehicle_df = pd.DataFrame([vehicle_log])
 
     # Log vehicle entry in database
-    db = pd.concat([db, vehicle_df], ignore_index=True)
+    db = pd.concat([db, vehicle_df], ignore_index=True)  # type: ignore
 
     # Save database
     with pd.ExcelWriter(
@@ -233,55 +244,23 @@ def log_vehicle_entry_db(detection: SARKINkofaDetection):
         if_sheet_exists="replace",
     ) as writer:
         # Write database
-        db.to_excel(writer, sheet_name="TRAFFIC", index=False)
+        db.to_excel(writer, sheet_name="TRAFFIC", index=False)  # type: ignore
 
 
-def show_vehicle_detection(
-    detection: SARKINkofaDetection, frame: np.ndarray, window_name: str = "SARKINkofa"
-):
+def show_vehicle_detection(detection: SarkiDetection, window_name: str = "SARKINkofa") -> None:
     """
     Show a vehicle detection on a frame.
 
     Args:
-        vehicle (SARKINkofaDetection): The vehicle detection to show.
-        frame (np.ndarray): The frame to show the vehicle detection on.
+        vehicle (SarkiDetection): The vehicle detection to show.
+        frame (MatLike): The frame to show the vehicle detection on.
         window_name (str): The name of the window to show the vehicle detection on.
     """
-    # Get vehicle bounding box
-    vehicle_bbox = detection.vehicle.box if detection.vehicle is not None else None
-
-    # Get vehicle license plate bounding box
-    vehicle_lp_bbox = detection.lp.box if detection.lp is not None else None
-
-    # Check if vehicle bounding box is not None
-    if vehicle_bbox is None:
-        return
-
-    # Draw vehicle bounding box
-    cv2.rectangle(
-        frame,
-        (vehicle_bbox[0], vehicle_bbox[1]),
-        (vehicle_bbox[2], vehicle_bbox[3]),
-        (0, 255, 0),
-        2,
-    )
-
-    # Check if vehicle license plate bounding box is not None
-    if vehicle_lp_bbox is not None:
-        # Draw vehicle license plate bounding box
-        cv2.rectangle(
-            frame,
-            (vehicle_lp_bbox[0] + vehicle_bbox[0], vehicle_lp_bbox[1] + vehicle_bbox[1]),
-            (vehicle_lp_bbox[2] + vehicle_bbox[0], vehicle_lp_bbox[3] + vehicle_bbox[1]),
-            (0, 0, 255),
-            2,
-        )
-
     # Show vehicle detection
-    cv2.imshow(window_name, frame)
+    cv2.imshow(window_name, np.array(detection.img))
 
 
-def show_message(message: str, frame: np.ndarray, window_name: str = "SARKINkofa"):
+def show_message(message: str, frame: MatLike, window_name: str = "SARKINkofa") -> None:
     """
     Show a message on a frame.
 
@@ -314,11 +293,13 @@ def show_message(message: str, frame: np.ndarray, window_name: str = "SARKINkofa
 
 
 print("[ INFO ] Initializing SARKINkofa...")
-sarkinkofa = SARKINkofa("n")
+sarkinkofa = SARKINkofa()
 print("[ INFO ] SARKINkofa initialized successfully!")
 
 print("[ INFO ] Accessing video stream...")
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 print("[ INFO ] Video stream accessed successfully!")
 
 while True:
@@ -330,101 +311,20 @@ while True:
     cv2.imshow("SARKINkofa", frame)
 
     # Break if ESC pressed
-    key = cv2.waitKey(1)
+    key: int = cv2.waitKey(1)
 
     if key == 27:  # ESC Key
         print("[ INFO ] Shutting down...")
         break
 
-    elif key == 2:  # LEFT Arrow Key
+    elif key == 111:  # o Key for outgoing vehicle
         print("[ INFO ] Checking out exiting vehicle...")
 
         # TODO: Detect vehicle
         print("[ INFO ] Detecting vehicle...")
-        detection = sarkinkofa.detect(frame)
+        _frame: MatLike = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        detection: SarkiDetection | None = sarkinkofa.detect(Image.fromarray(_frame), render=True)  # type: ignore
 
-        # TODO: Check if vehicle is not None
-        if detection.vehicle is None:
-            print("[ INFO ] No vehicle detected!")
-
-            # Show message
-            show_message("No vehicle detected!", frame)
-
-            # Wait for 5 seconds
-            cv2.waitKey(5000)
-
-            # Continue
-            continue
-
-        # TODO: Check if vehicle license plate is not None
-        if detection.lp is None:
-            print("[ INFO ] No vehicle license plate detected!")
-
-            # Show message
-            show_message("No vehicle license plate detected!", frame)
-
-            # Wait for 5 seconds
-            cv2.waitKey(5000)
-
-            # Continue
-            continue
-
-        # TODO: Show vehicle detection
-        show_vehicle_detection(detection, frame)
-
-        # TODO: Check if Vehicle is in database
-        print(f"[ INFO ] Checking if vehicle {detection.lp.number} is in database...")
-        vehicle_in_db = check_vehicle_in_db(detection)
-
-        if vehicle_in_db is None:  # Vehicle not in database
-            print(f"[ INFO ] Vehicle {detection.lp.number} not in database!")
-            print("[ INFO ] Creating new entry in database...")
-
-            # TODO: Create new entry in database
-            try:
-                log_vehicle_in_db(detection)
-            except Exception as e:
-                print(f"[ ERROR ] {e}")
-
-                # Show message
-                show_message(f"Error: {e}", frame)
-
-                # Wait for 5 seconds
-                cv2.waitKey(5000)
-
-                # Continue
-                continue
-
-            print(f"[ INFO ] Vehicle {detection.lp.number} logged in database!")
-
-        # TODO: Log vehicle exit
-        try:
-            print(f"[ INFO ] Logging vehicle {detection.lp.number} exit...")
-            log_vehicle_exit_db(detection)
-            print(f"[ INFO ] Vehicle {detection.lp.number} exit logged!")
-
-            # Show message
-            show_message(f"Vehicle {detection.lp.number} exit logged!", frame)
-        except Exception as e:
-            print(f"[ ERROR ] {e}")
-
-            # Show message
-            show_message(f"Error: {e}", frame)
-
-            # Wait for 5 seconds
-            cv2.waitKey(5000)
-
-            # Continue
-            continue
-
-    elif key == 3:  # RIGHT Arrow Key
-        print("[ INFO ] Checking out entering vehicle...")
-
-        # TODO: Detect vehicle
-        print("[ INFO ] Detecting vehicle...")
-        detection = sarkinkofa.detect(frame)
-
-        # TODO: Check if vehicle is not None
         if detection is None:
             print("[ INFO ] No vehicle detected!")
 
@@ -437,8 +337,21 @@ while True:
             # Continue
             continue
 
+        # TODO: Check if vehicle is not None
+        if detection.vehicles is None or len(detection.vehicles) == 0:
+            print("[ INFO ] No vehicle detected!")
+
+            # Show message
+            show_message("No vehicle detected!", frame)
+
+            # Wait for 5 seconds
+            cv2.waitKey(5000)
+
+            # Continue
+            continue
+
         # TODO: Check if vehicle license plate is not None
-        if detection.lp is None:
+        if detection.vehicles[0].plates is None or len(detection.vehicles[0].plates) == 0:
             print("[ INFO ] No vehicle license plate detected!")
 
             # Show message
@@ -451,14 +364,14 @@ while True:
             continue
 
         # TODO: Show vehicle detection
-        show_vehicle_detection(detection, frame)
+        show_vehicle_detection(detection)
 
         # TODO: Check if Vehicle is in database
-        print(f"[ INFO ] Checking if vehicle {detection.lp.number} is in database...")
+        print("[ INFO ] Checking if vehicle is in database...")
         vehicle_in_db = check_vehicle_in_db(detection)
 
         if vehicle_in_db is None:  # Vehicle not in database
-            print(f"[ INFO ] Vehicle {detection.lp.number} not in database!")
+            print("[ INFO ] Vehicle not in database!")
             print("[ INFO ] Creating new entry in database...")
 
             # TODO: Create new entry in database
@@ -476,16 +389,110 @@ while True:
                 # Continue
                 continue
 
-            print(f"[ INFO ] Vehicle {detection.lp.number} logged in database!")
+            print("[ INFO ] Vehicle logged in database!")
+
+        # TODO: Log vehicle exit
+        try:
+            print("[ INFO ] Logging vehicle exit...")
+            log_vehicle_exit_db(detection)
+            print("[ INFO ] Vehicle exit logged!")
+
+            # Show message
+            show_message("Vehicle exit logged!", frame)
+        except Exception as e:
+            print(f"[ ERROR ] {e}")
+
+            # Show message
+            show_message(f"Error: {e}", frame)
+
+            # Wait for 5 seconds
+            cv2.waitKey(5000)
+
+            # Continue
+            continue
+
+    elif key == 105:  # i Key for incoming vehicle
+        print("[ INFO ] Checking out entering vehicle...")
+
+        # TODO: Detect vehicle
+        print("[ INFO ] Detecting vehicle...")
+        _frame: MatLike = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        detection: SarkiDetection | None = sarkinkofa.detect(Image.fromarray(_frame), render=True)  # type: ignore
+
+        if detection is None:
+            print("[ INFO ] No vehicle detected!")
+
+            # Show message
+            show_message("No vehicle detected!", frame)
+
+            # Wait for 5 seconds
+            cv2.waitKey(5000)
+
+            # Continue
+            continue
+
+        # TODO: Check if vehicle is not None
+        if detection.vehicles is None or len(detection.vehicles) == 0:
+            print("[ INFO ] No vehicle detected!")
+
+            # Show message
+            show_message("No vehicle detected!", frame)
+
+            # Wait for 5 seconds
+            cv2.waitKey(5000)
+
+            # Continue
+            continue
+
+        # TODO: Check if vehicle license plate is not None
+        if detection.vehicles[0].plates is None or len(detection.vehicles[0].plates) == 0:
+            print("[ INFO ] No vehicle license plate detected!")
+
+            # Show message
+            show_message("No vehicle license plate detected!", frame)
+
+            # Wait for 5 seconds
+            cv2.waitKey(5000)
+
+            # Continue
+            continue
+
+        # TODO: Show vehicle detection
+        show_vehicle_detection(detection)
+
+        # TODO: Check if Vehicle is in database
+        print("[ INFO ] Checking if vehicle is in database...")
+        vehicle_in_db: DataFrame | None = check_vehicle_in_db(detection)
+
+        if vehicle_in_db is None:  # Vehicle not in database
+            print("[ INFO ] Vehicle not in database!")
+            print("[ INFO ] Creating new entry in database...")
+
+            # TODO: Create new entry in database
+            try:
+                log_vehicle_in_db(detection)
+            except Exception as e:
+                print(f"[ ERROR ] {e}")
+
+                # Show message
+                show_message(f"Error: {e}", frame)
+
+                # Wait for 5 seconds
+                cv2.waitKey(5000)
+
+                # Continue
+                continue
+
+            print("[ INFO ] Vehicle logged in database!")
 
         # TODO: Log entry and entry time
         try:
-            print(f"[ INFO ] Logging vehicle {detection.lp.number} entry...")
+            print("[ INFO ] Logging vehicle entry...")
             log_vehicle_entry_db(detection)
-            print(f"[ INFO ] Vehicle {detection.lp.number} entry logged!")
+            print("[ INFO ] Vehicle entry logged!")
 
             # Show message
-            show_message(f"Vehicle {detection.lp.number} entry logged in database!", frame)
+            show_message("Vehicle entry logged in database!", frame)
         except Exception as e:
             print(f"[ ERROR ] {e}")
 

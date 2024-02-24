@@ -2,9 +2,19 @@
 .DS_Store
 
 # Dependencies
+.vscode/
+
 __pycache__/
+.venv/
+.env
 
 *.png
 *.jpg
 *.jpeg
 *.mp4
+*,json
+
+!demo/**/*.png
+!demo/**/*.jpg
+!demo/**/*.jpeg
+!demo/**/*.json

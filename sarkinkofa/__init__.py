@@ -1,239 +1,150 @@
-import os
+from cv2.typing import MatLike
 
-import pathlib
-import random
-import numpy as np
-from ultralytics import YOLO
-
-from .types import LicensePlateDetection, VehicleDetection, SARKINkofaDetection
-from .constants import MODEL_DIR
-
-
-# Set random seed for reproducibility
-random.seed(0)
+from .tools import SarkiANPD, SarkiANPR
+from .types import PlateDetection, SarkiDetection, SarkiResult, VehicleDetection
+from .utils import draw_bbox
 
 
 class SARKINkofa:
-    model_size_all = ["n", "s", "m", "l"]
+    def __init__(self) -> None:
+        # initialize the model
+        self._initialize()
 
-    def __init__(self, model_size: str) -> None:
-        """
-        Initializes SARKINkofa object.
+    def detect(
+        self,
+        image: MatLike,
+        det_conf: float = 0.7,
+        det_iou: float = 0.5,
+        read_conf: float = 0.1,
+        read_iou: float = 0.5,
+        render: bool = False,
+    ) -> SarkiDetection | None:
+        result: SarkiDetection = SarkiDetection(img=image, vehicles=None)
 
-        Args:
-            model_size (str): The size of the model to use. Must be one of ["n", "s", "m", "l"].
-        """
+        vehicle_out: list[VehicleDetection] | None = self._detect_vehicle(image, det_conf, det_iou)
 
-        # Check if size is valid
-        if model_size not in self.model_size_all:
-            raise Exception(f"Invalid model size! Must be one of {self.model_size_all}.")
+        if vehicle_out is not None:
+            for vehicle in vehicle_out:
+                x1, y1, x2, y2 = vehicle.box
+                plate_out: list[PlateDetection] | None = self._detect_plate(
+                    image[y1:y2, x1:x2],
+                    det_conf,
+                    det_iou,
+                    read_conf,
+                    read_iou,
+                )
 
-        # Check if model directory exists
-        if not os.path.isdir(MODEL_DIR):
-            raise Exception(f"Model directory {MODEL_DIR} does not exist!")
+                vehicle.plates = plate_out
 
-        # Initialize model size
-        self.model_size = model_size.lower()
+        result.vehicles = vehicle_out
 
-        # Load YOLO model
-        self.anpd_model = YOLO(os.path.join(MODEL_DIR, f"anpdv8{self.model_size}.pt"))
-        self.anpd_model_classes = (
-            pathlib.Path(os.path.join(MODEL_DIR, "anpdv8.names")).read_text().splitlines()
-        )
-        self.anpd_model_colors = [
-            (
-                random.randint(0, 255),
-                random.randint(0, 255),
-                random.randint(0, 255),
-            )
-            for _ in range(len(self.anpd_model_classes))
-        ]
+        if render and result.vehicles:
+            result.img = self.render(image, result)
 
-        self.anpr_model = YOLO(os.path.join(MODEL_DIR, f"anprv8{self.model_size}.pt"))
-        self.anpr_model_classes = (
-            pathlib.Path(os.path.join(MODEL_DIR, "anprv8.names")).read_text().splitlines()
-        )
-        self.anpr_model_colors = [
-            (
-                random.randint(0, 255),
-                random.randint(0, 255),
-                random.randint(0, 255),
-            )
-            for _ in range(len(self.anpr_model_classes))
-        ]
+        return result
 
-    def __call__(self, img) -> SARKINkofaDetection:
-        """
-        Detects vehicles and license plates in an image.
+    def render(self, image: MatLike, result: SarkiDetection) -> MatLike:
+        if result.vehicles is None:
+            return image
 
-        Args:
-            img: The input image to detect vehicles and license plates in.
-
-        Returns:
-            A SARKINkofaDetection object containing the detected vehicle and license plate.
-        """
-        # Detect vehicle
-        vehicle = self._detect_vehicle(img)
-
-        # Check if vehicle is not None
-        if vehicle is None:
-            return SARKINkofaDetection()
-
-        # Detect license plate
-        lp = self._detect_lp(vehicle.img)
-
-        # Return SARKINkofa detection
-        return SARKINkofaDetection(vehicle=vehicle, lp=lp)
-
-    def detect(self, img) -> SARKINkofaDetection:
-        """
-        Detects vehicles and license plates in an image.
-
-        Args:
-            img: The input image to detect vehicles and license plates in.
-
-        Returns:
-            A SARKINkofaDetection object containing the detected vehicle and license plate.
-        """
-        # Detect vehicle
-        vehicle = self._detect_vehicle(img)
-
-        # Check if vehicle is not None
-        if vehicle is None:
-            return SARKINkofaDetection()
-
-        # Detect license plate
-        lp = self._detect_lp(vehicle.img)
-
-        # Return SARKINkofa detection
-        return SARKINkofaDetection(vehicle=vehicle, lp=lp)
-
-    def _read_lp(self, img) -> tuple[str, float] | None:
-        """
-        Reads the license plate number and confidence score from an input image.
-
-        Args:
-            img: The input image to read the license plate from.
-
-        Returns:
-            A tuple containing the license plate number and confidence score if a license plate is detected,
-            otherwise returns None.
-        """
-        # Detect license plate number
-        results = self.anpr_model(img, verbose=False)
-
-        # Extract license plate number
-        names = results[0].names
-        boxes = results[0].boxes.data.numpy()
-
-        # Return if no license plate is detected
-        if len(names) == 0:
-            return None
-
-        # Sort boxes by x1 coordinate (left to right)
-        boxes = boxes[boxes[:, 0].argsort()].tolist()
-
-        # Add names to boxes
-        labels = [names[box[-1]] for box in boxes]
-
-        # Add labels column to boxes
-        boxes = [box + [label] for box, label in zip(boxes, labels)]
-
-        # Assemble license plate number
-        lpn = "".join([box[-1] for box in boxes])
-        lpn_conf = np.mean([box[4] for box in boxes], dtype=float)
-
-        return lpn, lpn_conf
-
-    def _detect_lp(self, img) -> LicensePlateDetection | None:
-        """
-        Detects license plate in an image and returns its information.
-
-        Args:
-            img (numpy.ndarray): The input image.
-
-        Returns:
-            LicensePlateDetection | None: The license plate detection result.
-        """
-        # Detect license plate
-        anpd_results = self.anpd_model(img, classes=[3], verbose=False)
-
-        # Extract license plate
-        boxes = anpd_results[0].boxes.xyxy.cpu().numpy().astype(int)
-        confs = anpd_results[0].boxes.conf.cpu().numpy()
-        cls_ids = anpd_results[0].boxes.cls.cpu().numpy().astype(int)
-        cls_labels = [self.anpd_model_classes[cls_id] for cls_id in cls_ids]
-        cls_colors = [self.anpd_model_colors[cls_id] for cls_id in cls_ids]
-
-        # Return if no license plate is detected
-        if len(boxes) == 0:
-            return None
-
-        # Get license plate with highest confidence
-        lp_idx = confs.argmax()
-        lp_box = boxes[lp_idx]
-        lp_conf = confs[lp_idx]
-        lp_cls = cls_labels[lp_idx]
-        lp_color = cls_colors[lp_idx]
-        lp_img = img[lp_box[1] : lp_box[3], lp_box[0] : lp_box[2]]
-
-        # Detect license plate number
-        anpr_result = self._read_lp(lp_img)
-
-        # Extract license plate number
-        if not anpr_result:
-            lp_number, lp_number_conf = None, None
-        else:
-            lp_number, lp_number_conf = anpr_result
-
-        # Return license plate
-        return LicensePlateDetection(
-            img=lp_img,
-            box=lp_box,
-            conf=lp_conf,
-            cls=lp_cls,
-            color=lp_color,
-            number=lp_number,
-            number_conf=lp_number_conf,
+        image_out: MatLike = draw_bbox(
+            image.copy(),
+            [v.box for v in result.vehicles],
+            [v.label for v in result.vehicles],
         )
 
-    def _detect_vehicle(self, img) -> VehicleDetection | None:
-        """
-        Detects a vehicle in an image and returns its information.
+        # if there are any plate detections
+        for v in result.vehicles:
+            if v.plates:
+                _boxes: list[tuple[int, int, int, int]] = [
+                    (
+                        p.box[0] + v.box[0],
+                        p.box[1] + v.box[1],
+                        p.box[2] + v.box[0],
+                        p.box[3] + v.box[1],
+                    )
+                    for p in v.plates
+                ]
+                _labels: list[str] = [p.number if p.number else "" for p in v.plates]
 
-        Args:
-            img: A numpy array representing the image.
+                image_out = draw_bbox(image_out, _boxes, _labels)
 
-        Returns:
-            A VehicleDetection object containing the detected vehicle's information, or None if no vehicle is detected.
-        """
-        # Detect vehicle
-        anpd_results = self.anpd_model(img, classes=[1], verbose=False)
+        return image_out
 
-        # Extract vehicle information
-        boxes = anpd_results[0].boxes.xyxy.cpu().numpy().astype(int)
-        confs = anpd_results[0].boxes.conf.cpu().numpy()
-        cls_ids = anpd_results[0].boxes.cls.cpu().numpy().astype(int)
-        cls_labels = [self.anpd_model_classes[cls_id] for cls_id in cls_ids]
-        cls_colors = [self.anpd_model_colors[cls_id] for cls_id in cls_ids]
+    def _initialize(self) -> None:
+        # load the model
+        self._anpd = SarkiANPD()
+        self._anpr = SarkiANPR()
 
-        # Return if no vehicle is detected
-        if len(boxes) == 0:
-            return None
-
-        # Get vehicle with highest confidence
-        vehicle_idx = confs.argmax()
-        vehicle_box = boxes[vehicle_idx]
-        vehicle_conf = confs[vehicle_idx]
-        vehicle_cls = cls_labels[vehicle_idx]
-        vehicle_color = cls_colors[vehicle_idx]
-        vehicle_img = img[vehicle_box[1] : vehicle_box[3], vehicle_box[0] : vehicle_box[2]]
-
-        # Return vehicle
-        return VehicleDetection(
-            img=vehicle_img,
-            box=vehicle_box,
-            conf=vehicle_conf,
-            cls=vehicle_cls,
-            color=vehicle_color,
+    def _detect_vehicle(
+        self,
+        vehicle_img: MatLike,
+        det_conf: float = 0.7,
+        det_iou: float = 0.5,
+    ) -> list[VehicleDetection] | None:
+        vehicle_out: SarkiResult | None = self._anpd.detect(
+            image=vehicle_img,
+            conf_thresh=det_conf,
+            iou_thresh=det_iou,
+            exc_cls=[3],  # exclude the license plate class
+            render=False,
         )
+
+        if vehicle_out is not None:
+            return [
+                VehicleDetection(
+                    box=box,
+                    conf=conf,
+                    label=label,
+                )
+                for box, conf, label in zip(
+                    vehicle_out.boxes, vehicle_out.confs, vehicle_out.labels
+                )
+            ]
+
+        return None
+
+    def _detect_plate(
+        self,
+        plate_img: MatLike,
+        det_conf: float = 0.7,
+        det_iou: float = 0.5,
+        read_conf: float = 0.1,
+        read_iou: float = 0.5,
+    ) -> list[PlateDetection] | None:
+        plate_out: SarkiResult | None = self._anpd.detect(
+            image=plate_img,
+            conf_thresh=det_conf,
+            iou_thresh=det_iou,
+            inc_cls=[3],  # include only the license plate class
+            render=False,
+        )
+
+        if plate_out is not None:
+            # create a list of PlateDetection objects
+            return [
+                PlateDetection(
+                    box=box,
+                    conf=conf,
+                    number=self._read_plate(
+                        plate_img[box[1] : box[3], box[0] : box[2]], read_conf, read_iou
+                    ),  # type: ignore
+                )
+                for box, conf in zip(plate_out.boxes, plate_out.confs)
+            ]
+
+        return None
+
+    def _read_plate(
+        self, number_img: MatLike, read_conf: float = 0.1, read_iou: float = 0.5
+    ) -> str | None:
+        number_out: SarkiResult | None = self._anpr.detect(
+            image=number_img,
+            conf_thresh=read_conf,
+            iou_thresh=read_iou,
+        )
+
+        if number_out is not None:
+            return "".join(number_out.labels)
+
+        return None

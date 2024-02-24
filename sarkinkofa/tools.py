@@ -1,15 +1,246 @@
-import os
 import time
-import cv2
-import json
-from watchdog.observers import Observer
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import onnxruntime as ort  # type: ignore
+from cv2.typing import MatLike
+from numpy.typing import NDArray
+from onnxruntime import InferenceSession  # type: ignore
 from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
 
-from . import SARKINkofa
-from .types import SARKINkofaDetection
+from sarkinkofa.constants import MODEL_DIR
+
+from .types import SarkiResult
+from .utils import draw_bbox, nms, resize, xywh2xyxy
 
 
-class SARKINKofaFSWatcher:
+class SarkiBASE:
+    def __init__(self, model_path: Path, names_path: Path) -> None:
+        self._model_path: Path = model_path
+        self._names_path: Path = names_path
+
+        # check if the model and names files exist
+        if not self._model_path.exists():
+            raise FileNotFoundError(f"Model file {self._model_path} does not exist!")
+
+        if not self._names_path.exists():
+            raise FileNotFoundError(f"Names file {self._names_path} does not exist!")
+
+        # initialize the model
+        self._initialize()
+
+    @property
+    def names(self) -> dict[int, str]:
+        return self._names
+
+    def detect(
+        self,
+        image: MatLike,
+        conf_thresh: float = 0.7,
+        iou_thresh: float = 0.5,
+        inc_cls: list[int] | None = None,
+        exc_cls: list[int] | None = None,
+        render: bool = False,
+    ) -> SarkiResult | None:
+        # preprocess the input
+        _input: NDArray[Any] = self._preprocess(image)
+
+        # run the inference
+        output: Any = self._model.run([self._output_name], {self._input_name: _input})  # type: ignore
+
+        # postprocess the output
+        _output: SarkiResult | None = self._postprocess(output, conf_thresh, iou_thresh)
+
+        # check if exc_cls and inc_cls are both provided
+        if inc_cls is not None and exc_cls is not None:
+            raise ValueError("inc_cls and exc_cls cannot be provided at the same time!")
+
+        # filter the output if required
+        if inc_cls is not None and _output is not None:
+            _idx: list[int] = [i for i, c in enumerate(_output.cls) if c in inc_cls]
+
+            if len(_idx) > 0:
+                _output.boxes = [_output.boxes[i] for i in _idx]
+                _output.confs = [_output.confs[i] for i in _idx]
+                _output.cls = [_output.cls[i] for i in _idx]
+                _output.labels = [_output.labels[i] for i in _idx]
+            else:
+                return None
+
+        if exc_cls is not None and _output is not None:
+            _idx: list[int] = [i for i, c in enumerate(_output.cls) if c not in exc_cls]
+
+            if len(_idx) > 0:
+                _output.boxes = [_output.boxes[i] for i in _idx]
+                _output.confs = [_output.confs[i] for i in _idx]
+                _output.cls = [_output.cls[i] for i in _idx]
+                _output.labels = [_output.labels[i] for i in _idx]
+            else:
+                return None
+
+        # render the output if required
+        if render and _output is not None:
+            # draw the bounding box
+            _image: MatLike = draw_bbox(
+                image=image,
+                boxes=_output.boxes,
+                labels=_output.labels,
+            )
+
+            _output.img = _image
+
+        return _output
+
+    def _initialize(self) -> None:
+        # load the model
+        self._model = InferenceSession(
+            self._model_path,
+            providers=ort.get_available_providers(),  # type: ignore
+        )
+
+        # load the names as dict
+        self._names: dict[int, str] = {
+            idx: name for idx, name in enumerate(self._names_path.read_text().splitlines())
+        }
+        # get input and output details
+        model_inputs: Any = self._model.get_inputs()
+        model_outputs: Any = self._model.get_outputs()
+
+        self._input_name: str = model_inputs[0].name
+        self._input_shape: tuple[int, int] = (model_inputs[0].shape[3], model_inputs[0].shape[2])
+        self._output_name: str = model_outputs[0].name
+
+    def _preprocess(self, image: MatLike) -> NDArray[Any]:
+        # set the output shape
+        self._output_shape: tuple[int, int] = (image.shape[1], image.shape[0])
+
+        # resize the image to the input shape of the model
+        _resize_output: tuple[MatLike, tuple[int, int], tuple[int, int, int, int]] = resize(
+            image, self._input_shape, fill=(0, 0, 0)
+        )
+        _image: MatLike = _resize_output[0]
+        self._image_shape: tuple[int, int] = _resize_output[1]
+        self._image_pad: tuple[int, int, int, int] = _resize_output[2]
+
+        # normalize the image
+        image_arr = np.array(_image, dtype=np.float32) / 255.0
+
+        # transpose the image: HWC to CHW
+        image_arr: NDArray[Any] = np.transpose(image_arr, (2, 0, 1))
+
+        # add a batch dimension: CHW to NCHW
+        image_tensor: NDArray[Any] = image_arr[np.newaxis, :, :, :].astype(np.float32)
+
+        return image_tensor
+
+    def _postprocess(
+        self,
+        output: Any,
+        conf_thresh: float = 0.7,
+        iou_thresh: float = 0.5,
+    ) -> SarkiResult | None:
+        # remove the batch dimension
+        preds: NDArray[Any] = np.squeeze(output[0]).T
+        boxes: NDArray[Any] = preds[:, :4]
+        cls: NDArray[Any] = np.argmax(preds[:, 4:], axis=1)
+        confs: NDArray[Any] = np.max(preds[:, 4:], axis=1)
+
+        # get the class with the highest probability
+        preds = preds[confs > conf_thresh, :]
+        boxes = boxes[confs > conf_thresh, :]
+        cls = cls[confs > conf_thresh]
+        confs = confs[confs > conf_thresh]
+
+        if len(preds) == 0:
+            return None
+
+        # remove the padding
+        boxes[:, 0] -= self._image_pad[2]
+        boxes[:, 1] -= self._image_pad[0]
+
+        # rescale the bounding boxes to the original image size
+        boxes = np.divide(
+            boxes,
+            [
+                self._image_shape[0],
+                self._image_shape[1],
+                self._image_shape[0],
+                self._image_shape[1],
+            ],
+        )
+        boxes = np.multiply(
+            boxes,
+            [
+                self._output_shape[0],
+                self._output_shape[1],
+                self._output_shape[0],
+                self._output_shape[1],
+            ],
+        )
+
+        # convert from [x, y, w, h] to [x1, y1, x2, y2]
+        boxes = xywh2xyxy(boxes)
+
+        # compute the non-maxima suppression
+        _cls: NDArray[np.intp] = np.empty((0), dtype=np.intp)
+        _boxes: NDArray[np.intp] = np.empty((0, 4), dtype=np.intp)
+        _confs: NDArray[np.float32] = np.empty((0), dtype=np.float32)
+        _labels: list[str] = []
+        _idx: list[int] = []
+
+        for _class in np.unique(cls):
+            class_indices: NDArray[Any] = np.where(cls == _class)[0]
+
+            _nms_output: tuple[NDArray[np.intp], list[int]] | None = nms(
+                boxes[class_indices, :], iou_thresh
+            )
+
+            if _nms_output is not None:
+                _boxes = np.concatenate((_boxes, _nms_output[0]))
+                _confs = np.concatenate((_confs, confs[class_indices][_nms_output[1]]))
+                _cls = np.concatenate((_cls, cls[class_indices][_nms_output[1]]))
+                _labels.extend([self._names[int(i)] for i in cls[class_indices][_nms_output[1]]])
+                _idx.extend(class_indices[_nms_output[1]])
+
+        # return the bounding boxes (as list[list[int]]), the class indices (as list[int]),
+        # and the class confidences (as list[float])
+        if len(_idx) == 0:
+            return None
+
+        # sort the bounding boxes by their x1 coordinate
+        _idx = np.argsort(_boxes[:, 0]).tolist()
+        _boxes = _boxes[_idx]
+        _confs = _confs[_idx]
+        _cls = _cls[_idx]
+        _labels = [_labels[i] for i in _idx]
+
+        return SarkiResult(
+            img=None,
+            boxes=_boxes.tolist(),
+            confs=_confs.tolist(),
+            cls=_cls.tolist(),
+            labels=_labels,
+        )
+
+
+class SarkiANPD(SarkiBASE):
+    def __init__(self) -> None:
+        super().__init__(
+            model_path=Path(MODEL_DIR) / "anpd.onnx", names_path=Path(MODEL_DIR) / "anpd.names"
+        )
+
+
+class SarkiANPR(SarkiBASE):
+    def __init__(self) -> None:
+        super().__init__(
+            model_path=Path(MODEL_DIR) / "anpr.onnx", names_path=Path(MODEL_DIR) / "anpr.names"
+        )
+
+
+class SarkiFSWatcher:
     """
     A class for watching a folder for changes and triggering an event handler.
 
@@ -22,162 +253,38 @@ class SARKINKofaFSWatcher:
         verbose (bool): Whether to print verbose output.
     """
 
-    def __init__(self, input_folder: str, output_folder: str, verbose=False):
-        """
-        Initializes an instance of SARKINKofaFSWatcher.
+    def __init__(
+        self,
+        input_folder: str | list[str],
+        ev_handler: FileSystemEventHandler,
+        frequency: float = 0.5,
+        recursive: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        self.input_folder: list[str] = input_folder if isinstance(input_folder, list) else [input_folder]
+        self.observer: BaseObserver = Observer()
+        self.handler: FileSystemEventHandler = ev_handler
+        self.frequency: float = frequency
+        self.recursive: bool = recursive
 
-        Args:
-            input_folder (str): The path to the input folder.
-            output_folder (str): The path to the output folder.
-            verbose (bool, optional): Whether to print verbose output. Defaults to False.
-        """
-        self.input_folder = input_folder
-        self.output_folder = output_folder
-        self.observer = Observer()
-        self.detector = SARKINkofa("n")
-        self.event_handler = SARKINKofaFSHandler(
-            self.output_folder, self.detector, verbose=verbose
-        )
-        self.verbose = verbose
-
-    def start_watching(self):
+    def start_watching(self) -> None:
         """
         Starts watching the input folder for any changes and triggers the event handler
         """
-        self.observer.schedule(self.event_handler, path=self.input_folder, recursive=False)
+        for folder in self.input_folder:
+            self.observer.schedule(self.handler, folder, recursive=self.recursive) # type: ignore
+
         self.observer.start()
 
-        while True:
-            time.sleep(1)
+        try:
+            while True:
+                time.sleep(self.frequency)
+        except KeyboardInterrupt:
+            self.stop_watching()
 
-    def stop_watching(self):
+    def stop_watching(self) -> None:
         """
         Stops the observer and waits for it to finish.
         """
         self.observer.stop()
         self.observer.join()
-
-
-class SARKINKofaFSHandler(FileSystemEventHandler):
-    """
-    A class that handles file system events and processes images.
-
-    Attributes:
-        output_folder (str): The path to the output folder.
-        verbose (bool): Whether to print verbose output.
-        detector (SARKINkofa): An instance of the SARKINkofa class.
-    """
-
-    def __init__(self, output_folder: str, detector: SARKINkofa, verbose=False):
-        """
-        Initializes an instance of SARKINKofaFSHandler.
-
-        Args:
-            output_folder (str): The path to the output folder.
-            detector (SARKINkofa): An instance of the SARKINkofa class.
-            verbose (bool, optional): Whether to print verbose output. Defaults to False.
-        """
-        self.output_folder = output_folder
-        self.verbose = verbose
-        self.detector = detector
-
-    def on_created(self, event):
-        if event.is_directory:
-            return
-
-        if event.src_path.lower().endswith((".png", ".jpg", ".jpeg")):
-            if self.verbose:
-                print(f"[ INFO ] New image detected: {event.src_path}")
-                print(f"[ INFO ] Processing image: {event.src_path}")
-
-            self.process_image(event.src_path)
-
-            if self.verbose:
-                print(f"[ INFO ] Image processed: {event.src_path}")
-
-    def read_image(self, image_path):
-        # Read image
-        image = cv2.imread(image_path)
-
-        # Convert to RGB
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        return image
-
-    def render_image(self, image, detection: SARKINkofaDetection):
-        # Convert to BGR
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-
-        # Get vehicle and plate number bounding boxes
-        vehicle_bbox = detection.vehicle.box if detection.vehicle is not None else None
-        plate_bbox = detection.lp.box if detection.lp is not None else None
-
-        # Check if vehicle is detected
-        if vehicle_bbox is not None:
-            # Draw vehicle bounding box
-            image = cv2.rectangle(
-                image,
-                (vehicle_bbox[0], vehicle_bbox[1]),
-                (vehicle_bbox[2], vehicle_bbox[3]),
-                (0, 255, 0),
-                2,
-            )
-
-            # Check if plate number is detected
-            if plate_bbox is not None:
-                # Draw plate number bounding box
-                image = cv2.rectangle(
-                    image,
-                    (plate_bbox[0] + vehicle_bbox[0], plate_bbox[1] + vehicle_bbox[1]),
-                    (plate_bbox[2] + vehicle_bbox[0], plate_bbox[3] + vehicle_bbox[1]),
-                    (0, 0, 255),
-                    3,
-                )
-
-                # Get plate number text
-                plate_text = detection.lp.number if detection.lp is not None else None
-
-                # Check if plate number text is present
-                if plate_text is not None:
-                    # Draw plate number text
-                    image = cv2.putText(
-                        image,
-                        plate_text,
-                        (plate_bbox[0] + vehicle_bbox[0], plate_bbox[1] + vehicle_bbox[1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.9,
-                        (0, 0, 255),
-                        3,
-                    )
-
-        return image
-
-    def process_image(self, image_path):
-        # Read image
-        image = self.read_image(image_path)
-
-        # Detect vehicle & plate number
-        detection: SARKINkofaDetection = self.detector(image)
-
-        # Render image
-        _image = self.render_image(image, detection)
-
-        # Prepare detection in json format
-        _detection = detection.to_dict()
-
-        # Prepare output file name
-        file_name = os.path.splitext(os.path.basename(image_path))[0]
-
-        # Save image
-        _image_path = os.path.join(self.output_folder, f"{file_name}.jpg")
-        cv2.imwrite(_image_path, _image)
-
-        # Save detection
-        _detection_path = os.path.join(self.output_folder, f"{file_name}.json")
-        with open(_detection_path, "w") as f:
-            json.dump(_detection, f)
-
-        if self.verbose:
-            print(f"[ INFO ] Image saved: {_image_path}")
-            print(f"[ INFO ] Detection saved: {_detection_path}")
-            print(f"[ INFO ] Image processed: {image_path}")

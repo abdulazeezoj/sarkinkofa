@@ -14,7 +14,7 @@ sarkinkofa = "sarkinkofa.__main__:app"
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
-pillow = "10.0.1"
+pillow = "^10.2.0"
 numpy = "^1.26.1"
 typer = {extras = ["all"], version = "^0.9.0"}
 watchdog = "^3.0.0"
@@ -24,7 +24,6 @@ onnxruntime = "^1.17.0"
 pandas = "^2.2.0"
 opencv-python = "^4.9.0.80"
 openpyxl = "^3.1.2"
-tortoise-orm = {extras = ["aiosqlite"], version = "^0.20.0"}
 sqlalchemy = "^2.0.27"
 
 [tool.poetry.group.dev.dependencies]

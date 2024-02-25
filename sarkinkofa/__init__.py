@@ -19,6 +19,7 @@ class SARKINkofa:
         read_iou: float = 0.5,
         render: bool = False,
     ) -> SarkiDetection | None:
+        
         result: SarkiDetection = SarkiDetection(img=image, vehicles=None)
 
         vehicle_out: list[VehicleDetection] | None = self._detect_vehicle(image, det_conf, det_iou)
@@ -82,6 +83,10 @@ class SARKINkofa:
         det_conf: float = 0.7,
         det_iou: float = 0.5,
     ) -> list[VehicleDetection] | None:
+        # check if the image size won't cause an error
+        if vehicle_img.shape[0] < 32 or vehicle_img.shape[1] < 32:
+            return None
+
         vehicle_out: SarkiResult | None = self._anpd.detect(
             image=vehicle_img,
             conf_thresh=det_conf,
@@ -112,6 +117,10 @@ class SARKINkofa:
         read_conf: float = 0.1,
         read_iou: float = 0.5,
     ) -> list[PlateDetection] | None:
+        # check if the image size won't cause an error
+        if plate_img.shape[0] < 32 or plate_img.shape[1] < 32:
+            return None
+
         plate_out: SarkiResult | None = self._anpd.detect(
             image=plate_img,
             conf_thresh=det_conf,
@@ -138,6 +147,10 @@ class SARKINkofa:
     def _read_plate(
         self, number_img: MatLike, read_conf: float = 0.1, read_iou: float = 0.5
     ) -> str | None:
+        # check if the image size won't cause an error
+        if number_img.shape[0] < 32 or number_img.shape[1] < 32:
+            return None
+
         number_out: SarkiResult | None = self._anpr.detect(
             image=number_img,
             conf_thresh=read_conf,

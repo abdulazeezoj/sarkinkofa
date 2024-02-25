@@ -11,15 +11,12 @@ from sarkinkofa.tools import SarkiFSWatcher
 BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
 INC_DIR: str = os.path.join(BASE_DIR, "inc")
 OUT_DIR: str = os.path.join(BASE_DIR, "out")
-LOG_DIR: str = os.path.join(BASE_DIR, "log")
 
 # Create input and output directories if they don't exist
 if not os.path.exists(INC_DIR):
     os.makedirs(INC_DIR)
 if not os.path.exists(OUT_DIR):
     os.makedirs(OUT_DIR)
-if not os.path.exists(LOG_DIR):
-    os.makedirs(LOG_DIR)
 
 
 class Base(DeclarativeBase):

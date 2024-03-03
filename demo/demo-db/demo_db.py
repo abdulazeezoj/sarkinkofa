@@ -1,3 +1,4 @@
+import argparse
 import os
 from datetime import datetime
 from typing import List, Literal, Tuple
@@ -7,16 +8,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, rela
 from watchdog.events import DirCreatedEvent, FileCreatedEvent, FileSystemEventHandler
 
 from sarkinkofa.tools import SarkiFSWatcher
-
-BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
-INC_DIR: str = os.path.join(BASE_DIR, "inc")
-OUT_DIR: str = os.path.join(BASE_DIR, "out")
-
-# Create input and output directories if they don't exist
-if not os.path.exists(INC_DIR):
-    os.makedirs(INC_DIR)
-if not os.path.exists(OUT_DIR):
-    os.makedirs(OUT_DIR)
 
 
 class Base(DeclarativeBase):
@@ -30,7 +21,6 @@ class Vehicle(Base):
     number: Mapped[str] = mapped_column(String(20), unique=True)
     vehicle_image: Mapped[str] = mapped_column(String)
     plate_image: Mapped[str] = mapped_column(String)
-    number_file: Mapped[str] = mapped_column(String)
 
     traffics: Mapped[List["Traffic"]] = relationship(
         back_populates="vehicle", cascade="all, delete-orphan"
@@ -46,9 +36,7 @@ class Traffic(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicle.id"), nullable=False)
     entry_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
-    entry_image: Mapped[str] = mapped_column(String)
     exit_time: Mapped[datetime] = mapped_column(DateTime, nullable=True)
-    exit_image: Mapped[str] = mapped_column(String, nullable=True)
 
     vehicle: Mapped["Vehicle"] = relationship(back_populates="traffics")
 
@@ -57,174 +45,116 @@ class Traffic(Base):
 
 
 class SarkiFSHandler(FileSystemEventHandler):
-    def __init__(self, db_path: str = "sqlite:///_db.sqlite3") -> None:
+    def __init__(self, inc_dir: str, out_dir: str, db_path: str = "sqlite:///_db.sqlite3") -> None:
         super().__init__()
 
         self.engine: Engine = create_engine(db_path)
         Base.metadata.create_all(self.engine)
-        self.files: dict[str, dict[str, str | None]] = {}
+        self.store: dict[str, dict[str, str | None]] = {}
+        self.inc_dir: str = inc_dir
+        self.out_dir: str = out_dir
 
     def on_created(self, event: FileCreatedEvent | DirCreatedEvent) -> None:
         _src_path: str = event.src_path
 
         if not event.is_directory:
-            if _src_path.lower().endswith((".png", ".jpg", ".txt")):
-                if INC_DIR in _src_path:
-                    print(f"[ INFO ] New File in 'in' directory: {_src_path}")
-                    _f_id: str = self._parse(_src_path)
+            if _src_path.lower().endswith((".jpg")):
+                _f_id: str | None = self._parse(_src_path)
 
+                if not _f_id:
+                    return
+
+                # check if source path is in input or output directory
+                if self.inc_dir in _src_path:  # incoming vehicle
                     self._process(_f_id, type="inc")
-                elif OUT_DIR in _src_path:
-                    print(f"[ INFO ] New File in 'out' directory: {_src_path}")
-                    _f_id: str = self._parse(_src_path)
-
+                elif self.out_dir in _src_path:  # outgoing vehicle
                     self._process(_f_id, type="out")
 
-    def _parse(self, _src_path: str) -> str:
-        _f_name: str = os.path.basename(_src_path)
-        _f_id: str = _f_name.split("_")[0]
-        _f_type: str = _f_name.split("_")[1].split(".")[0]
+    def _parse(self, _src_path: str) -> str | None:
+        """
+        Parses the source path and updates the logs with the file information.
 
-        if _f_id in self.files:
-            self.files[_f_id][_f_type] = _src_path
+        Args:
+            _src_path (str): The source path of the file.
+
+        Returns:
+            str | None: The parsed file ID if it is not "no plate", otherwise None.
+        """
+        # parse file name
+        _f_name: str = os.path.basename(_src_path)
+        _f_split: list[str] = _f_name.split("_")
+        _f_id: str = _f_split[1]
+        _f_type: str = "plate" if _f_split[-1].split(".")[0] == "plate" else "vehicle"
+
+        # return None if no plate
+        if _f_id.lower() == "no plate":
+            return None
+
+        # create / update logs
+        if _f_id in self.store:
+            self.store[_f_id][_f_type] = _src_path
         else:
-            self.files[_f_id] = {"number": None, "plate": None, "vehicle": None}
-            self.files[_f_id][_f_type] = _src_path
+            self.store[_f_id] = {"plate": None, "vehicle": None}
+            self.store[_f_id][_f_type] = _src_path
 
         return _f_id
 
-    def _process(self, id: str, type: Literal["inc", "out"]) -> None:
+    def _process(self, number: str, type: Literal["inc", "out"]) -> None:
+        """
+        Process the given number based on the type.
+
+        Args:
+            number (str): The number to be processed.
+            type (Literal["inc", "out"]): The type of processing to be performed.
+
+        Returns:
+            None
+        """
         # check if all files are available
-        if not all(self.files[id].values()):
-            print(f"[ INFO ] Waiting for other files for {id}...")
+        if not all(self.store[number].values()):
             return
 
-        number_file: str | None = self.files[id]["number"]
-        plate_file: str | None = self.files[id]["plate"]
-        vehicle_file: str | None = self.files[id]["vehicle"]
+        plate_file: str | None = self.store[number]["plate"]
+        vehicle_file: str | None = self.store[number]["vehicle"]
 
-        if not (number_file and plate_file and vehicle_file):
-            print(f"[ INFO ] Waiting for other files for {id}...")
+        # return if any file is missing
+        if not (plate_file and vehicle_file):
             return
-
-        print("[ INFO ] Processing all files: ")
-        print(f"[ INFO ] Number file: {number_file}")
-        print(f"[ INFO ] Plate file: {plate_file}")
-        print(f"[ INFO ] Vehicle file: {vehicle_file}")
 
         if type == "inc":
-            self._inc_process(number_file, plate_file, vehicle_file)
+            self._inc_process(number, plate_file, vehicle_file)
 
         elif type == "out":
-            self._out_process(number_file, plate_file, vehicle_file)
+            self._out_process(number, plate_file, vehicle_file)
 
-        self.files.pop(id)
+        self.store.pop(number)
 
-    def _inc_process(self, number_file: str, plate_file: str, vehicle_file: str) -> None:
+    def _inc_process(self, number: str, plate_file: str, vehicle_file: str) -> None:
         # process files
-        number: str = self._read_file(number_file)
         vehicle_image: str = vehicle_file
         plate_image: str = plate_file
 
-        # get vehicle
-        vehicle: Vehicle | None = self._get_vehicle(number)
+        # get vehicle, create if not exists
+        vehicle: Vehicle = self._get_create_vehicle(number, vehicle_image, plate_image)
 
-        if vehicle:
-            print(f"[ INFO ] Vehicle already exists: {number}")
+        # log entry
+        self._log_entry(vehicle, datetime.utcnow())
 
-            # get traffic
-            traffic: Traffic | None = self._get_traffic(vehicle)
-
-            if traffic:
-                print(f"[ WARN ] Vehicle already in traffic: {number}")
-
-                return
-
-            # create traffic
-            entry_time: datetime = datetime.now()
-            entry_image: str = vehicle_image
-            self._create_traffic(vehicle, entry_time, entry_image)
-            print(f"[ INFO ] Vehicle entry logged: {number}")
-
-        else:
-            print(f"[ INFO ] Creating new vehicle: {number}")
-            vehicle = self._create_vehicle(number, vehicle_image, plate_image, number_file)
-
-            # create traffic
-            entry_time: datetime = datetime.now()
-            entry_image: str = vehicle_image
-            self._create_traffic(vehicle, entry_time, entry_image)
-            print(f"[ INFO ] New vehicle created: {number}")
-
-    def _out_process(self, number_file: str, plate_file: str, vehicle_file: str) -> None:
+    def _out_process(self, number: str, plate_file: str, vehicle_file: str) -> None:
         # process files
-        number: str = self._read_file(number_file)
         vehicle_image: str = vehicle_file
         plate_image: str = plate_file
 
-        # get vehicle
-        vehicle: Vehicle | None = self._get_vehicle(number)
+        # get vehicle, create if not exists
+        vehicle: Vehicle = self._get_create_vehicle(number, vehicle_image, plate_image)
 
-        if vehicle:
-            # get traffic
-            traffic: Traffic | None = self._get_traffic(vehicle)
+        # log exit
+        self._log_exit(vehicle, datetime.utcnow())
 
-            if not traffic:
-                print(f"[ WARN ] Vehicle not in traffic: {number}")
-
-                return
-
-            if not traffic.entry_time:
-                print(f"[ WARN ] Vehicle entry not logged: {number}")
-
-                return
-
-            if traffic.exit_time:
-                print(f"[ WARN ] Vehicle already exited: {number}")
-
-                return
-
-            print(f"[ INFO ] Updating traffic: {number}")
-            exit_time: datetime = datetime.now()
-            exit_image: str = vehicle_image
-            self._update_traffic(traffic, exit_time, exit_image)
-            print(f"[ INFO ] Vehicle exit logged: {number}")
-
-        else:
-            print(f"[ WARN ] Vehicle does not exist: {number}")
-            vehicle = self._create_vehicle(number, vehicle_image, plate_image, number_file)
-
-            # get traffic
-            traffic: Traffic | None = self._get_traffic(vehicle)
-
-            if not traffic:
-                print(f"[ WARN ] Vehicle not in traffic: {number}")
-
-                return
-
-            if not traffic.entry_time:
-                print(f"[ WARN ] Vehicle entry not logged: {number}")
-
-                return
-
-            if traffic.exit_time:
-                print(f"[ WARN ] Vehicle already exited: {number}")
-
-                return
-
-    def _read_file(self, file: str) -> str:
-        with open(file, "r") as f:
-            return f.read()
-
-    def _create_vehicle(
-        self, number: str, vehicle_image: str, plate_image: str, number_file: str
-    ) -> Vehicle:
+    def _create_vehicle(self, number: str, vehicle_image: str, plate_image: str) -> Vehicle:
         with Session(self.engine) as session:
             vehicle: Vehicle = Vehicle(
-                number=number,
-                vehicle_image=vehicle_image,
-                plate_image=plate_image,
-                number_file=number_file,
+                number=number, vehicle_image=vehicle_image, plate_image=plate_image
             )
 
             session.add(vehicle)
@@ -239,14 +169,22 @@ class SarkiFSHandler(FileSystemEventHandler):
 
             return vehicle
 
-    def _create_traffic(self, vehicle: Vehicle, entry_time: datetime, entry_image: str) -> Traffic:
+    def _get_create_vehicle(self, number: str, vehicle_image: str, plate_image: str) -> Vehicle:
+        vehicle: Vehicle | None = self._get_vehicle(number)
+
+        if not vehicle:
+            vehicle = self._create_vehicle(number, vehicle_image, plate_image)
+            self._log("Vehicle: {number} registered successfully ")
+
+        return vehicle
+
+    def _create_traffic(self, vehicle: Vehicle, entry_time: datetime) -> Traffic:
         with Session(self.engine) as session:
             session.add(vehicle)
 
             traffic: Traffic = Traffic(
                 vehicle_id=vehicle.id,
                 entry_time=entry_time,
-                entry_image=entry_image,
             )
 
             session.add(traffic)
@@ -254,12 +192,11 @@ class SarkiFSHandler(FileSystemEventHandler):
 
         return traffic
 
-    def _update_traffic(self, traffic: Traffic, exit_time: datetime, exit_image: str) -> None:
+    def _update_traffic(self, traffic: Traffic, exit_time: datetime) -> None:
         with Session(self.engine) as session:
             session.add(traffic)
 
             traffic.exit_time = exit_time
-            traffic.exit_image = exit_image
 
             session.commit()
 
@@ -276,15 +213,97 @@ class SarkiFSHandler(FileSystemEventHandler):
 
             return traffic
 
+    def _log_entry(self, vehicle: Vehicle, entry_time: datetime) -> Traffic | None:
+        traffic: Traffic | None = self._get_traffic(vehicle)
+
+        if not traffic or (traffic.entry_time and traffic.exit_time):
+            traffic = self._create_traffic(vehicle, entry_time)
+            self._log("Vehicle: {vehicle.number} ENTRY logged successfully ")
+
+            # send notification to gate controller to open gate
+            self._notify_gate("in", "open")
+
+            return traffic
+
+        if traffic.entry_time and not traffic.exit_time:
+            self._log(f"Vehicle: {vehicle.number} ENTRY logged but no EXIT", level="warn")
+
+            # [ TODO ] send notification to security to check vehicle
+            self._notify_security("check")
+
+            return traffic
+
+    def _log_exit(self, vehicle: Vehicle, exit_time: datetime) -> Traffic | None:
+        traffic: Traffic | None = self._get_traffic(vehicle)
+
+        if not traffic:
+            self._log(f"Vehicle: {vehicle.number} ENTRY not found", level="warn")
+
+            # send notification to security to check vehicle
+            self._notify_security("check")
+
+            return traffic
+
+        if traffic.entry_time and traffic.exit_time:
+            self._log(f"Vehicle: {vehicle.number} already EXIT", level="warn")
+
+            # send notification to security to check vehicle
+            self._notify_security("check")
+
+            return traffic
+
+        if traffic.entry_time and not traffic.exit_time:
+            self._update_traffic(traffic, exit_time)
+            self._log("Vehicle: {vehicle.number} EXIT logged successfully ")
+
+            # send notification to gate controller to open gate
+            self._notify_gate("out", "open")
+
+            return traffic
+
+    def _notify_gate(self, gate: str, action: Literal["open", "close"]) -> None:
+        # check if action is valid
+        if action not in ["open", "close"]:
+            self._log(f"Action: {action} not found", level="warn")
+            return
+
+        if gate == "in":
+            self._log(f"Gate: {gate.upper()} - {action.upper()} requested")
+        elif gate == "out":
+            self._log(f"Gate: {gate.upper()} - {action.upper()} requested")
+        else:
+            self._log(f"Gate: {gate.upper()} not found", level="warn")
+
+    def _notify_security(self, action: Literal["check", "action"]) -> None:
+        if action == "check":
+            self._log(f"Security: {action.upper()} requested")
+        elif action == "action":
+            self._log(f"Security: {action.upper()} requested")
+        else:
+            self._log(f"Security: {action} not found", level="warn")
+
+    def _log(self, message: str, level: Literal["info", "warn", "error"] = "info") -> None:
+        print(f"[ {level.upper()} ] {message}")
+
 
 if __name__ == "__main__":
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="SarkiFSWatcher")
+    parser.add_argument("--inc", type=str, help="Path to the input directory")
+    parser.add_argument("--out", type=str, help="Path to the output directory")
+    args = parser.parse_args()
+
+    # Create input and output directories if they don't exist
+    os.makedirs(args.inc, exist_ok=True)
+    os.makedirs(args.out, exist_ok=True)
+
     # Initialize watcher
     print("[ INFO ] Initializing watcher...")
     watcher = SarkiFSWatcher(
-        input_folder=[INC_DIR, OUT_DIR],
-        ev_handler=SarkiFSHandler(),
+        input_folder=[args.inc, args.out],
+        ev_handler=SarkiFSHandler(args.inc, args.out),
         frequency=0.5,
-        recursive=False,
+        recursive=True,
     )
     print("[ INFO ] Watcher initialized!")
 

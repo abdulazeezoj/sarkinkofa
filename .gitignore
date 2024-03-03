@@ -12,9 +12,6 @@ __pycache__/
 *.jpg
 *.jpeg
 *.mp4
-*,json
+*.json
 
-!demo/**/*.png
-!demo/**/*.jpg
-!demo/**/*.jpeg
-!demo/**/*.json
+assets/

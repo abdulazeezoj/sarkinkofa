@@ -5,7 +5,7 @@ from typing import List, Literal, Tuple
 
 from sqlalchemy import DateTime, Engine, ForeignKey, Select, String, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
-from watchdog.events import DirCreatedEvent, FileCreatedEvent, FileSystemEventHandler
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
 
 from sarkinkofa.tools import SarkiFSWatcher
 
@@ -29,6 +29,9 @@ class Vehicle(Base):
     def __repr__(self) -> str:
         return f"<Vehicle(number={self.number})>"
 
+    def to_dict(self) -> dict[str, str]:
+        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+
 
 class Traffic(Base):
     __tablename__: str = "traffic"
@@ -36,7 +39,11 @@ class Traffic(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicle.id"), nullable=False)
     entry_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    entry_vehicle_image: Mapped[str] = mapped_column(String)
+    entry_plate_image: Mapped[str] = mapped_column(String)
     exit_time: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    exit_vehicle_image: Mapped[str] = mapped_column(String, nullable=True)
+    exit_plate_image: Mapped[str] = mapped_column(String, nullable=True)
 
     vehicle: Mapped["Vehicle"] = relationship(back_populates="traffics")
 
@@ -45,7 +52,7 @@ class Traffic(Base):
 
 
 class SarkiFSHandler(FileSystemEventHandler):
-    def __init__(self, inc_dir: str, out_dir: str, db_path: str = "sqlite:///_db.sqlite3") -> None:
+    def __init__(self, inc_dir: str, out_dir: str, db_path: str = "sqlite:///_demo.db") -> None:
         super().__init__()
 
         self.engine: Engine = create_engine(db_path)
@@ -54,7 +61,7 @@ class SarkiFSHandler(FileSystemEventHandler):
         self.inc_dir: str = inc_dir
         self.out_dir: str = out_dir
 
-    def on_created(self, event: FileCreatedEvent | DirCreatedEvent) -> None:
+    def on_created(self, event: FileSystemEvent) -> None:
         _src_path: str = event.src_path
 
         if not event.is_directory:
@@ -138,7 +145,12 @@ class SarkiFSHandler(FileSystemEventHandler):
         vehicle: Vehicle = self._get_create_vehicle(number, vehicle_image, plate_image)
 
         # log entry
-        self._log_entry(vehicle, datetime.utcnow())
+        self._log_entry(
+            vehicle,
+            entry_time=datetime.utcnow(),
+            vehicle_image=vehicle_image,
+            plate_image=plate_image,
+        )
 
     def _out_process(self, number: str, plate_file: str, vehicle_file: str) -> None:
         # process files
@@ -149,7 +161,12 @@ class SarkiFSHandler(FileSystemEventHandler):
         vehicle: Vehicle = self._get_create_vehicle(number, vehicle_image, plate_image)
 
         # log exit
-        self._log_exit(vehicle, datetime.utcnow())
+        self._log_exit(
+            vehicle,
+            exit_time=datetime.utcnow(),
+            vehicle_image=vehicle_image,
+            plate_image=plate_image,
+        )
 
     def _create_vehicle(self, number: str, vehicle_image: str, plate_image: str) -> Vehicle:
         with Session(self.engine) as session:
@@ -159,6 +176,7 @@ class SarkiFSHandler(FileSystemEventHandler):
 
             session.add(vehicle)
             session.commit()
+            session.expunge(vehicle)
 
         return vehicle
 
@@ -170,40 +188,48 @@ class SarkiFSHandler(FileSystemEventHandler):
             return vehicle
 
     def _get_create_vehicle(self, number: str, vehicle_image: str, plate_image: str) -> Vehicle:
-        vehicle: Vehicle | None = self._get_vehicle(number)
+        _vehicle: Vehicle | None = self._get_vehicle(number)
 
-        if not vehicle:
-            vehicle = self._create_vehicle(number, vehicle_image, plate_image)
+        if not _vehicle:
+            _vehicle = self._create_vehicle(number, vehicle_image, plate_image)
             self._log("Vehicle: {number} registered successfully ")
 
-        return vehicle
+        return _vehicle
 
-    def _create_traffic(self, vehicle: Vehicle, entry_time: datetime) -> Traffic:
+    def _create_traffic(
+        self, vehicle: Vehicle, entry_time: datetime, vehicle_image: str, plate_image: str
+    ) -> Traffic:
         with Session(self.engine) as session:
-            session.add(vehicle)
-
             traffic: Traffic = Traffic(
                 vehicle_id=vehicle.id,
                 entry_time=entry_time,
+                entry_vehicle_image=vehicle_image,
+                entry_plate_image=plate_image,
             )
 
             session.add(traffic)
             session.commit()
+            session.expunge(traffic)
 
         return traffic
 
-    def _update_traffic(self, traffic: Traffic, exit_time: datetime) -> None:
+    def _update_traffic(
+        self, traffic: Traffic, exit_time: datetime, vehicle_image: str, plate_image: str
+    ) -> Traffic:
         with Session(self.engine) as session:
             session.add(traffic)
 
             traffic.exit_time = exit_time
+            traffic.exit_vehicle_image = vehicle_image
+            traffic.exit_plate_image = plate_image
 
             session.commit()
+            session.expunge(traffic)
+
+            return traffic
 
     def _get_traffic(self, vehicle: Vehicle) -> Traffic | None:
         with Session(self.engine) as session:
-            session.add(vehicle)
-
             query: Select[Tuple[Traffic]] = (
                 select(Traffic)
                 .where(Traffic.vehicle_id == vehicle.id)
@@ -213,16 +239,29 @@ class SarkiFSHandler(FileSystemEventHandler):
 
             return traffic
 
-    def _log_entry(self, vehicle: Vehicle, entry_time: datetime) -> Traffic | None:
+    def _log_entry(
+        self,
+        vehicle: Vehicle,
+        entry_time: datetime,
+        vehicle_image: str,
+        plate_image: str,
+    ) -> Traffic | None:
         traffic: Traffic | None = self._get_traffic(vehicle)
 
         if not traffic or (traffic.entry_time and traffic.exit_time):
-            traffic = self._create_traffic(vehicle, entry_time)
-            self._log("Vehicle: {vehicle.number} ENTRY logged successfully ")
+            traffic = self._create_traffic(
+                vehicle, entry_time, vehicle_image=vehicle_image, plate_image=plate_image
+            )
+            self._log(f"Vehicle: {vehicle.number} ENTRY logged successfully ")
 
             # send notification to gate controller to open gate
             self._notify_gate("in", "open")
 
+            return traffic
+
+        if (traffic.entry_vehicle_image == vehicle_image) or (
+            traffic.entry_plate_image == plate_image
+        ):
             return traffic
 
         if traffic.entry_time and not traffic.exit_time:
@@ -233,7 +272,13 @@ class SarkiFSHandler(FileSystemEventHandler):
 
             return traffic
 
-    def _log_exit(self, vehicle: Vehicle, exit_time: datetime) -> Traffic | None:
+    def _log_exit(
+        self,
+        vehicle: Vehicle,
+        exit_time: datetime,
+        vehicle_image: str,
+        plate_image: str,
+    ) -> Traffic | None:
         traffic: Traffic | None = self._get_traffic(vehicle)
 
         if not traffic:
@@ -242,6 +287,11 @@ class SarkiFSHandler(FileSystemEventHandler):
             # send notification to security to check vehicle
             self._notify_security("check")
 
+            return traffic
+
+        if (traffic.entry_vehicle_image == vehicle_image) or (
+            traffic.entry_plate_image == plate_image
+        ):
             return traffic
 
         if traffic.entry_time and traffic.exit_time:
@@ -253,8 +303,8 @@ class SarkiFSHandler(FileSystemEventHandler):
             return traffic
 
         if traffic.entry_time and not traffic.exit_time:
-            self._update_traffic(traffic, exit_time)
-            self._log("Vehicle: {vehicle.number} EXIT logged successfully ")
+            self._update_traffic(traffic, exit_time, vehicle_image, plate_image)
+            self._log(f"Vehicle: {vehicle.number} EXIT logged successfully ")
 
             # send notification to gate controller to open gate
             self._notify_gate("out", "open")
@@ -292,6 +342,8 @@ if __name__ == "__main__":
     parser.add_argument("--inc", type=str, help="Path to the input directory")
     parser.add_argument("--out", type=str, help="Path to the output directory")
     args = parser.parse_args()
+
+    # [ COMMAND ] python ./demo_db.py --inc <path> --out <path>
 
     # Create input and output directories if they don't exist
     os.makedirs(args.inc, exist_ok=True)

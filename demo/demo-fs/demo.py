@@ -147,7 +147,7 @@ class SarkiFSHandler(FileSystemEventHandler):
         # log entry
         self._log_entry(
             vehicle,
-            entry_time=datetime.utcnow(),
+            entry_time=datetime.now(),
             vehicle_image=vehicle_image,
             plate_image=plate_image,
         )
@@ -163,7 +163,7 @@ class SarkiFSHandler(FileSystemEventHandler):
         # log exit
         self._log_exit(
             vehicle,
-            exit_time=datetime.utcnow(),
+            exit_time=datetime.now(),
             vehicle_image=vehicle_image,
             plate_image=plate_image,
         )

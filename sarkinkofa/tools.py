@@ -6,7 +6,7 @@ import numpy as np
 import onnxruntime as ort  # type: ignore
 from cv2.typing import MatLike
 from numpy.typing import NDArray
-from onnxruntime import InferenceSession  # type: ignore
+from onnxruntime import InferenceSession, SessionOptions  # type: ignore
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver
@@ -96,8 +96,14 @@ class SarkiBASE:
 
     def _initialize(self) -> None:
         # load the model
+        self._model_opt = SessionOptions()  # type: ignore
+        self._model_opt.execution_mode = ort.ExecutionMode.ORT_PARALLEL  # type: ignore
+        self._model_opt.intra_op_num_threads = 3  # type: ignore
+        self._model_opt.inter_op_num_threads = 3  # type: ignore
+
         self._model = InferenceSession(
             self._model_path,
+            options=self._model_opt,  # type: ignore
             providers=ort.get_available_providers(),  # type: ignore
         )
 
@@ -126,13 +132,13 @@ class SarkiBASE:
         self._image_pad: tuple[int, int, int, int] = _resize_output[2]
 
         # normalize the image
-        image_arr = np.array(_image, dtype=np.float32) / 255.0
+        image_arr = np.array(_image, dtype=np.float16) / 255.0
 
         # transpose the image: HWC to CHW
         image_arr: NDArray[Any] = np.transpose(image_arr, (2, 0, 1))
 
         # add a batch dimension: CHW to NCHW
-        image_tensor: NDArray[Any] = image_arr[np.newaxis, :, :, :].astype(np.float32)
+        image_tensor: NDArray[Any] = image_arr[np.newaxis, :, :, :].astype(np.float16)
 
         return image_tensor
 
@@ -261,7 +267,9 @@ class SarkiFSWatcher:
         recursive: bool = False,
         **kwargs: Any,
     ) -> None:
-        self.input_folder: list[str] = input_folder if isinstance(input_folder, list) else [input_folder]
+        self.input_folder: list[str] = (
+            input_folder if isinstance(input_folder, list) else [input_folder]
+        )
         self.observer: BaseObserver = Observer()
         self.handler: FileSystemEventHandler = ev_handler
         self.frequency: float = frequency
@@ -272,7 +280,7 @@ class SarkiFSWatcher:
         Starts watching the input folder for any changes and triggers the event handler
         """
         for folder in self.input_folder:
-            self.observer.schedule(self.handler, folder, recursive=self.recursive) # type: ignore
+            self.observer.schedule(self.handler, folder, recursive=self.recursive)  # type: ignore
 
         self.observer.start()
 
